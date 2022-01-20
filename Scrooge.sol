@@ -15,14 +15,11 @@ contract Scrooge is Context, IERC20, Ownable {
     mapping (address => mapping (address => uint256)) private _allowances;
     mapping (address => bool) private _isExcludedFromFee;
     mapping (address => bool) private _isExcluded;
-    mapping (address => bool) private _isBot;
     
-
     address[] private _excluded;
 
     bool public tradingEnabled;
-    // bool public swapEnabled;
-    bool private swapping;
+    bool public initialized;
 
     uint8 private constant _decimals = 18;
     uint256 private constant MAX = ~uint256(0);
@@ -30,15 +27,13 @@ contract Scrooge is Context, IERC20, Ownable {
     uint256 private _tTotal = 1000000000 * 10**_decimals;
     uint256 private _rTotal = (MAX - (MAX % _tTotal));
 
-    address public constant deadAddress = 0x000000000000000000000000000000000000dEaD;
-
     string private constant _name = "Scrooge Token";
     string private constant _symbol = "SCRG";
 
     uint256 public rfi;
     uint256 public totalFeesPaid;
 
-    struct valuesFromGetValues{
+    struct valuesFromGetValues {
       uint256 rAmount;
       uint256 rTransferAmount;
       uint256 rRfi;
@@ -50,22 +45,32 @@ contract Scrooge is Context, IERC20, Ownable {
     event TradingEnabled(uint256 startDate);
     
 
-    constructor () {
+    function initialize() external onlyOwner {
+        require(!initialized, "Scrooge: already initialized");
+
         _rOwned[owner()] = _rTotal;
         _isExcludedFromFee[owner()] = true;
 
+        // set initial fee to 9%
         rfi = 90;
+
+        initialized = true;
 
         emit Transfer(address(0), owner(), _tTotal);
     }
+
 
     //std ERC20:
     function name() public pure returns (string memory) {
         return _name;
     }
+
+
     function symbol() public pure returns (string memory) {
         return _symbol;
     }
+
+
     function decimals() public pure returns (uint8) {
         return _decimals;
     }
@@ -75,24 +80,29 @@ contract Scrooge is Context, IERC20, Ownable {
         return _tTotal;
     }
 
+
     function balanceOf(address account) public view override returns (uint256) {
         if (_isExcluded[account]) return _tOwned[account];
         return tokenFromReflection(_rOwned[account]);
     }
+
 
     function transfer(address recipient, uint256 amount) public override returns (bool) {
         _transfer(_msgSender(), recipient, amount);
         return true;
     }
 
+
     function allowance(address owner, address spender) public view override returns (uint256) {
         return _allowances[owner][spender];
     }
+
 
     function approve(address spender, uint256 amount) public override returns (bool) {
         _approve(_msgSender(), spender, amount);
         return true;
     }
+
 
     function transferFrom(address sender, address recipient, uint256 amount) public override returns (bool) {
         _transfer(sender, recipient, amount);
@@ -100,22 +110,49 @@ contract Scrooge is Context, IERC20, Ownable {
         return true;
     }
 
+
     function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
         _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
         return true;
     }
+
 
     function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
         _approve(_msgSender(), spender, _allowances[_msgSender()][spender] - subtractedValue);
         return true;
     }
 
+
     function isExcludedFromReward(address account) public view returns (bool) {
         return _isExcluded[account];
     }
+
+
+    function startTrading() external onlyOwner {
+        tradingEnabled = true;
+        emit TradingEnabled(block.timestamp);
+    }
+
+
+    function reflect(uint256 tAmount) public {
+        address sender = _msgSender();
+        require(!_isExcluded[sender], "Scrooge: excluded addresses cannot call this function");
+        valuesFromGetValues memory s = _getValues(tAmount, true);
+        _rOwned[sender] = _rOwned[sender] - s.rAmount;
+        _rTotal = _rTotal - s.rAmount;
+        totalFeesPaid += tAmount;
+    }
+
+
+    function tokenFromReflection(uint256 rAmount) public view returns(uint256) {
+        require(rAmount <= _rTotal, "Scrooge: amount must be less than total reflections");
+        uint256 currentRate =  _getRate();
+        return rAmount/currentRate;
+    }
+
     
     function reflectionFromToken(uint256 tAmount, bool deductTransferRfi) public view returns(uint256) {
-        require(tAmount <= _tTotal, "Amount must be less than supply");
+        require(tAmount <= _tTotal, "Scrooge: amount must be less than supply");
         if (!deductTransferRfi) {
             valuesFromGetValues memory s = _getValues(tAmount, true);
             return s.rAmount;
@@ -125,30 +162,9 @@ contract Scrooge is Context, IERC20, Ownable {
         }
     }
 
-    function startTrading() external onlyOwner{
-        tradingEnabled = true;
-        emit TradingEnabled(block.timestamp);
-    }
 
-
-    function deliver(uint256 tAmount) public {
-        address sender = _msgSender();
-        require(!_isExcluded[sender], "Excluded addresses cannot call this function");
-        valuesFromGetValues memory s = _getValues(tAmount, true);
-        _rOwned[sender] = _rOwned[sender] - s.rAmount;
-        _rTotal = _rTotal - s.rAmount;
-        totalFeesPaid += tAmount;
-    }
-
-
-    function tokenFromReflection(uint256 rAmount) public view returns(uint256) {
-        require(rAmount <= _rTotal, "Amount must be less than total reflections");
-        uint256 currentRate =  _getRate();
-        return rAmount/currentRate;
-    }
-
-    function excludeFromReward(address account) public onlyOwner() {
-        require(!_isExcluded[account], "Account is already excluded");
+    function excludeFromReward(address account) external onlyOwner() {
+        require(!_isExcluded[account], "Scrooge: account is already excluded");
         if(_rOwned[account] > 0) {
             _tOwned[account] = tokenFromReflection(_rOwned[account]);
         }
@@ -156,8 +172,9 @@ contract Scrooge is Context, IERC20, Ownable {
         _excluded.push(account);
     }
 
+
     function includeInReward(address account) external onlyOwner() {
-        require(_isExcluded[account], "Account is not excluded");
+        require(_isExcluded[account], "Scrooge: account is not excluded");
         for (uint256 i = 0; i < _excluded.length; i++) {
             if (_excluded[i] == account) {
                 _excluded[i] = _excluded[_excluded.length - 1];
@@ -169,11 +186,13 @@ contract Scrooge is Context, IERC20, Ownable {
         }
     }
 
-    function excludeFromFee(address account) public onlyOwner {
+
+    function excludeFromFee(address account) external onlyOwner {
         _isExcludedFromFee[account] = true;
     }
 
-    function includeInFee(address account) public onlyOwner {
+
+    function includeInFee(address account) external onlyOwner {
         _isExcludedFromFee[account] = false;
     }
 
@@ -183,15 +202,16 @@ contract Scrooge is Context, IERC20, Ownable {
     }
 
    
-    function setFeeRates(uint256 _rfi) external onlyOwner {
+    function setFeeRate(uint256 _rfi) external onlyOwner {
+        require(_rfi <= 90, "Scrooge: fee cannot exceed 9%");
         rfi = _rfi;
         emit FeesChanged();
     }
 
 
     function _reflectRfi(uint256 rRfi, uint256 tRfi) private {
-        _rTotal -=rRfi;
-        totalFeesPaid +=tRfi;
+        _rTotal -= rRfi;
+        totalFeesPaid += tRfi;
     }
 
 
@@ -200,6 +220,7 @@ contract Scrooge is Context, IERC20, Ownable {
         (to_return.rAmount, to_return.rTransferAmount, to_return.rRfi) = _getRValues(to_return, tAmount, takeFee, _getRate());
         return to_return;
     }
+
 
     function _getTValues(uint256 tAmount, bool takeFee) private view returns (valuesFromGetValues memory s) {
         if(!takeFee) {
@@ -211,6 +232,7 @@ contract Scrooge is Context, IERC20, Ownable {
  
         return s;
     }
+
 
     function _getRValues(valuesFromGetValues memory s, uint256 tAmount, bool takeFee, uint256 currentRate) private pure returns (uint256 rAmount, uint256 rTransferAmount, uint256 rRfi) {
         rAmount = tAmount * currentRate;
@@ -224,10 +246,12 @@ contract Scrooge is Context, IERC20, Ownable {
         return (rAmount, rTransferAmount, rRfi);
     }
 
+
     function _getRate() private view returns(uint256) {
         (uint256 rSupply, uint256 tSupply) = _getCurrentSupply();
         return rSupply / tSupply;
     }
+
 
     function _getCurrentSupply() private view returns(uint256, uint256) {
         uint256 rSupply = _rTotal;
@@ -241,6 +265,7 @@ contract Scrooge is Context, IERC20, Ownable {
         return (rSupply, tSupply);
     }
 
+
     function _approve(address owner, address spender, uint256 amount) private {
         require(owner != address(0), "ERC20: approve from the zero address");
         require(spender != address(0), "ERC20: approve to the zero address");
@@ -248,15 +273,15 @@ contract Scrooge is Context, IERC20, Ownable {
         emit Approval(owner, spender, amount);
     }
 
+
     function _transfer(address from, address to, uint256 amount) private { 
         require(from != address(0), "ERC20: transfer from the zero address");
         require(to != address(0), "ERC20: transfer to the zero address");
         require(amount > 0, "Transfer amount must be greater than zero");
         require(amount <= balanceOf(from),"You are trying to transfer more than your balance");
-        require(!_isBot[from] && !_isBot[to], "No Bots Allowed");
 
         if(!_isExcludedFromFee[from] && !_isExcludedFromFee[to]){
-            require(tradingEnabled, "Trading is not enabled yet");
+            require(tradingEnabled, "Scrooge: trading is not enabled yet");
         }
         _tokenTransfer(from, to, amount, !(_isExcludedFromFee[from] || _isExcludedFromFee[to]));
     }
@@ -280,19 +305,9 @@ contract Scrooge is Context, IERC20, Ownable {
     }
 
 
-    function setAntibot(address account, bool _bot) external onlyOwner{
-        require(_isBot[account] != _bot, 'Value already set');
-        _isBot[account] = _bot;
-    }
-
-
-    function isBot(address account) public view returns(bool){
-        return _isBot[account];
-    }
-
-    //Use this in case BNB are sent to the contract by mistake
+    //Use this in case tokens are sent to the contract by mistake
     function rescueBNB(uint256 weiAmount) external onlyOwner{
-        require(address(this).balance >= weiAmount, "insufficient BNB balance");
+        require(address(this).balance >= weiAmount, "Scrooge: insufficient BNB balance");
         payable(msg.sender).transfer(weiAmount);
     }
 
